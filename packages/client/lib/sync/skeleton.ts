@@ -180,6 +180,11 @@ export class Skeleton extends MetaDBManager {
 
     await this.putBlock(head)
     await this.writeSyncStatus()
+
+    // If the sync is finished, start filling the canonical chain.
+    if (this.isLinked()) {
+      void this.fillCanonicalChain()
+    }
   }
 
   /**
@@ -350,8 +355,8 @@ export class Skeleton extends MetaDBManager {
         if (this.pulled.isZero()) {
           this.config.logger.info(`Beacon sync starting left=${left}`)
         } else {
-          const sinceStarted = new BN(new Date().getTime() - this.started).divn(1000)
-          const eta = timeDuration(sinceStarted.div(this.pulled).mul(left).toNumber())
+          const sinceStarted = (new Date().getTime() - this.started) / 1000
+          const eta = timeDuration((sinceStarted / this.pulled.toNumber()) * left.toNumber())
           this.config.logger.info(
             `Syncing beacon headers downloaded=${this.pulled} left=${left} eta=${eta}`
           )
@@ -412,7 +417,7 @@ export class Skeleton extends MetaDBManager {
     }
     this.filling = false
     this.config.logger.debug(
-      `Successfully put blocks start=${start} end=${canonicalHead} from skeleton chain to canonical`
+      `Successfully put blocks start=${start} end=${canonicalHead} from skeleton chain to canonical syncTargetHeight=${this.config.syncTargetHeight}`
     )
   }
 
