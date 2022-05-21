@@ -4,13 +4,14 @@ import Common, { Chain as CommonChain, Hardfork } from '@ethereumjs/common'
 import { FeeMarketEIP1559Transaction, Transaction } from '@ethereumjs/tx'
 import { Block, BlockHeader } from '@ethereumjs/block'
 import { DefaultStateManager, StateManager } from '@ethereumjs/vm/dist/state'
-import { Account, Address, BN } from 'ethereumjs-util'
+import { Account, Address, BN, keccak256 } from 'ethereumjs-util'
 import { Config } from '../../lib/config'
 import { FullEthereumService } from '../../lib/service'
 import { Chain } from '../../lib/blockchain'
 import { Miner } from '../../lib/miner'
 import { Event } from '../../lib/types'
 import { wait } from '../integration/util'
+import type { FullSynchronizer } from '../../lib/sync'
 
 const A = {
   address: new Address(Buffer.from('0b90087d864e82a284dca15923f3776de6bb016f', 'hex')),
@@ -59,6 +60,9 @@ tape('[Miner]', async (t) => {
         latest: Block.fromBlockData(),
         height: new BN(0),
       }
+    }
+    getLatestHeader() {
+      return BlockHeader.fromHeaderData()
     }
     blockchain: any = {
       putBlock: async () => {},
@@ -151,7 +155,7 @@ tape('[Miner]', async (t) => {
     await setBalance(vm.stateManager, A.address, new BN('200000000000001'))
 
     // add tx
-    txPool.add(txA01)
+    await txPool.add(txA01)
 
     // disable consensus to skip PoA block signer validation
     ;(vm.blockchain as any)._validateConsensus = false
@@ -184,10 +188,10 @@ tape('[Miner]', async (t) => {
       await setBalance(vm.stateManager, B.address, new BN('400000000000001'))
 
       // add txs
-      txPool.add(txA01)
-      txPool.add(txA02)
-      txPool.add(txA03)
-      txPool.add(txB01)
+      await txPool.add(txA01)
+      await txPool.add(txA02)
+      await txPool.add(txA03)
+      await txPool.add(txB01)
 
       // disable consensus to skip PoA block signer validation
       ;(vm.blockchain as any)._validateConsensus = false
@@ -239,12 +243,11 @@ tape('[Miner]', async (t) => {
       { to: B.address, maxFeePerGas: 6 },
       { common }
     ).sign(A.privateKey)
-    txPool.add(tx)
+    await txPool.add(tx, true)
 
     // disable consensus to skip PoA block signer validation
     ;(vm.blockchain as any)._validateConsensus = false
-
-    service.synchronizer.handleNewBlock = async (block: Block) => {
+    ;(service.synchronizer as FullSynchronizer).handleNewBlock = async (block: Block) => {
       t.equal(block.transactions.length, 0, 'should not include tx')
       miner.stop()
       txPool.stop()
@@ -284,15 +287,15 @@ tape('[Miner]', async (t) => {
     // add txs
     const data = '0xfe' // INVALID opcode, consumes all gas
     const tx1FillsBlockGasLimit = Transaction.fromTxData(
-      { gasLimit: gasLimit - 1, data },
+      { gasLimit: gasLimit - 1, data, gasPrice: new BN(1000000000) },
       { common }
     ).sign(A.privateKey)
     const tx2ExceedsBlockGasLimit = Transaction.fromTxData(
-      { gasLimit: 21000, to: B.address, nonce: 1 },
+      { gasLimit: 21000, to: B.address, nonce: 1, gasPrice: new BN(1000000000) },
       { common }
     ).sign(A.privateKey)
-    txPool.add(tx1FillsBlockGasLimit)
-    txPool.add(tx2ExceedsBlockGasLimit)
+    await txPool.add(tx1FillsBlockGasLimit)
+    await txPool.add(tx2ExceedsBlockGasLimit)
 
     // disable consensus to skip PoA block signer validation
     ;(vm.blockchain as any)._validateConsensus = false
@@ -325,11 +328,16 @@ tape('[Miner]', async (t) => {
     txPool.start()
     miner.start()
 
-    await setBalance(vm.stateManager, A.address, new BN('200000000000001'))
-
     // add many txs to slow assembling
+    let privateKey = keccak256(Buffer.from(''))
     for (let i = 0; i < 1000; i++) {
-      txPool.add(createTx())
+      // In order not to pollute TxPool with too many txs from the same address
+      // (or txs which are already known), keep generating a new address for each tx
+      const address = Address.fromPrivateKey(privateKey)
+      await setBalance(vm.stateManager, address, new BN('200000000000001'))
+      const tx = createTx({ address, privateKey })
+      await txPool.add(tx)
+      privateKey = keccak256(privateKey)
     }
 
     chain.putBlocks = () => {
